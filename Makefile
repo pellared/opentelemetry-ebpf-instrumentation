@@ -11,8 +11,8 @@ GOOS ?= linux
 GOARCH ?= $(shell go env GOARCH || echo amd64)
 
 # RELEASE_VERSION will contain the tag name, or the branch name if current commit is not a tag
-RELEASE_VERSION := $(shell git describe --all | cut -d/ -f2)
-RELEASE_REVISION := $(shell git rev-parse --short HEAD )
+RELEASE_VERSION ?= $(shell git describe --all | cut -d/ -f2-)
+RELEASE_REVISION ?= $(shell git rev-parse --short HEAD )
 BUILDINFO_PKG ?= go.opentelemetry.io/obi/pkg/buildinfo
 TEST_OUTPUT ?= ./testoutput
 RELEASE_DIR ?= ./dist
@@ -46,7 +46,7 @@ CFLAGS := -std=gnu17 -O2 -g -Wunaligned-access -Wpacked -Wpadded -Wall -Werror $
 
 CLANG_TIDY ?= clang-tidy
 
-CILIUM_EBPF_VER ?= v0.20.0
+CILIUM_EBPF_VER ?= v0.22.0
 CILIUM_EBPF_PKG := github.com/cilium/ebpf
 
 # regular expressions for excluded file patterns
@@ -329,7 +329,7 @@ test-privileged: $(ENVTEST)
 .PHONY: run-bpf-verifier-vm
 run-bpf-verifier-vm:
 	@echo "### Running BPF verifier tests"
-	go test -v -count=1 -timeout 20m -tags=bpf_verifier_tests ./pkg/internal/ebpf/verifier/...
+	go test -count=1 -timeout 20m -parallel 8 -tags=bpf_verifier_tests ./pkg/internal/ebpf/verifier/...
 
 .PHONY: cov-exclude-generated
 cov-exclude-generated:
@@ -412,7 +412,10 @@ java-verify: java-spotless-check java-test java-build
 image-build:
 	@echo "### Building the auto-instrumenter image"
 	$(call check_defined, IMG_ORG, Your Docker repository user name)
-	$(OCI_BIN) buildx build --load -t ${IMG} .
+	$(OCI_BIN) buildx build --load -t ${IMG} \
+		--build-arg RELEASE_VERSION=${RELEASE_VERSION} \
+		--build-arg RELEASE_REVISION=${RELEASE_REVISION} \
+		.
 
 # generator-image-build is only used for local development. GH actions that build and publish the image don't make use of it
 .PHONY: generator-image-build
@@ -902,6 +905,12 @@ regenerate-port-lookup:
 CONFIG_SCHEMA_FILE ?= devdocs/config/config-schema.json
 CONFIG_DOCS_FILE ?= devdocs/config/CONFIG.md
 
+# Hidden pre-release config v2 artifacts. Keep generated/artifact-only updates
+# separate from conversion logic so reviewers can inspect drift intentionally.
+CONFIG_V2_DIR ?= devdocs/config/version-2.0
+CONFIG_V2_SCHEMA_FILE ?= $(CONFIG_V2_DIR)/obi-extension.schema.json
+CONFIG_V2_EXAMPLE_FILE ?= $(CONFIG_V2_DIR)/examples/default-configuration.yaml
+
 .PHONY: generate-config-schema
 generate-config-schema:
 	@echo "### Generating JSON schema for OBI configuration"
@@ -939,4 +948,9 @@ check-config-schema:
 .PHONY: check-config-v2-parity
 check-config-v2-parity:
 	@echo "### Checking config v2 default parity"
-	go run ./cmd/check-config-v2-parity
+	go run ./cmd/check-config-v2-parity -v2-default $(CONFIG_V2_EXAMPLE_FILE)
+
+.PHONY: check-config-v2-artifacts
+check-config-v2-artifacts: check-config-v2-parity
+	@echo "### Checking hidden config v2 artifacts"
+	go run ./cmd/check-config-v2-artifacts -schema $(CONFIG_V2_SCHEMA_FILE) -example $(CONFIG_V2_EXAMPLE_FILE)

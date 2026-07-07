@@ -65,6 +65,7 @@ Attributes configures the decoration of some extra attributes that will be added
 | `attributes.rename_unresolved_hosts_incoming` | `string` | `OTEL_EBPF_RENAME_UNRESOLVED_HOSTS_INCOMING` | `incoming` |  |  |  |
 | `attributes.rename_unresolved_hosts_outgoing` | `string` | `OTEL_EBPF_RENAME_UNRESOLVED_HOSTS_OUTGOING` | `outgoing` |  |  |  |
 | `attributes.select` | `map[string]object` |  |  |  |  | Selection specifies which attributes are allowed for each signal. The key is usually the metric name (either in Prometheus or OpenTelemetry format); the key "traces" selects optional attributes for exported OTLP traces. The key "resource" selects exported resource attributes. The value is the enumeration of included/excluded attribute globs |
+| `attributes.sensitive_query_params` | [`SensitiveQueryParamsConfig`](#sensitivequeryparamsconfig) |  |  |  |  | Controls which query-parameter keys are redacted in url.full and url.query. |
 
 ### `attributes.host_id`
 
@@ -182,7 +183,7 @@ EBPFTracer configuration for eBPF programs
 
 ### `ebpf.buffer_sizes`
 
-Per-protocol maximum bytes to capture per request per direction, sent to userspace via large buffer events. Values must stay aligned with MaxCapturedPayloadBytes and the k_large_buf_max_*_captured_bytes constants in bpf/common/large_buffers.h.  Default: 0 (disabled).
+Per-protocol maximum bytes to capture per request per direction, sent to userspace via large buffer events.  Default: 0 (disabled).
 
 | YAML Path | Type | Env Var | Default | Values | Deprecated | Description |
 |---|---|---|---|---|---|---|
@@ -766,6 +767,15 @@ RegexSelector that specify a given instrumented service. Each instance has to de
 | `sampler` | [`SamplerConfig`](#samplerconfig) |  | Sampler standard configuration <https://opentelemetry.io/docs/concepts/sdk-configuration/general-sdk-configuration/#otel_traces_sampler> We don't support, yet, the jaeger and xray samplers. |
 | `target_pids` | `integer`[] |  | Allows selecting processes by PID. When non-empty, the process PID must be in this list (in addition to any path/port criteria). |
 
+### SensitiveQueryParamsConfig
+
+SensitiveQueryParamsConfig controls which query-parameter keys are redacted. The effective list is DefaultSensitiveQueryParams + Add - Remove. When both Add and Remove are empty, DefaultSensitiveQueryParams is used unchanged.
+
+| Field | Type | Values | Description |
+|---|---|---|---|
+| `add` | `string`[] |  |  |
+| `remove` | `string`[] |  |  |
+
 ### CustomRoutesConfig
 
 | Field | Type | Values | Description |
@@ -783,6 +793,7 @@ HTTPParsingMatch defines matching criteria for an HTTP parsing rule. Header rule
 | `methods` | `string`[] | `DELETE`, `GET`, `HEAD`, `OPTIONS`, `PATCH`, `POST`, `PUT` | Is a list of HTTP methods this rule applies to (shared). Empty means all methods. |
 | `obfuscation_json_paths` | `string`[] | `$.password`, `$.user.name`, `$.items[0].id`, etc | Is a list of JSONPath expressions for fields to obfuscate (body only) |
 | `patterns` | `glob`[] | `app-*`, `service-??`, `prod-*-db`, etc | Is a list of glob patterns to match header names against (headers only) |
+| `response_status_code` | [`NumericRange`](#numericrange) |  | Filters this rule to only apply when the response status code matches the given range. If unset, the rule applies regardless of status code. |
 | `url_path_patterns` | `glob`[] | `app-*`, `service-??`, `prod-*-db`, etc | Is a list of glob patterns to match the request path against (shared) |
 
 ### SamplerConfig
@@ -801,3 +812,16 @@ SvcMetricsConfig is equivalent to MetricsConfig, but avoids defining environment
 | Field | Type | Values | Description |
 |---|---|---|---|
 | `features` | `string`[] | `*`, `all`, `application`, `application_host`, `application_jvm`, `application_runtime`, `application_service_graph`, `application_span`, `application_span_otel`, `application_span_sizes`, `ebpf`, `network`, `network_flow_packets`, `network_inter_zone`, `stats`, `stats_tcp_failed_connections`, `stats_tcp_io`, `stats_tcp_retransmits`, `stats_tcp_rtt` | Specifies which metric features to export. Accepted values: application, network, application_span, application_service_graph, ... envDefault is provided to avoid breaking changes |
+
+### NumericRange
+
+NumericRange defines numeric comparison criteria for a rule match condition. All fields are optional; only the provided fields are evaluated.
+
+| Field | Type | Values | Description |
+|---|---|---|---|
+| `equals` | `integer` |  |  |
+| `greater_equals` | `integer` |  |  |
+| `greater_than` | `integer` |  |  |
+| `less_equals` | `integer` |  |  |
+| `less_than` | `integer` |  |  |
+| `not_equals` | `integer` |  |  |

@@ -65,6 +65,24 @@ var weaverIgnoredAdviceMessages = map[string]struct{}{
 	"Namespace 'iface' collides with existing attribute 'iface.direction'": {},
 }
 
+// actionableAdviceTypes lists the weaver finding-type values OBI treats as
+// failures in addition to `violation`-level advice. Hoisted here (rather than
+// matched as an inline string literal) so the coupling to weaver's advice-type
+// vocabulary lives in one documented place and is easy to extend.
+//
+//   - "extends_namespace": an attribute emitted under an existing semconv
+//     namespace but declared in no registry (upstream semconv or
+//     `schemas/obi/`). Weaver classifies these as `information`-level, so
+//     without this they would silently pass; OBI requires every emitted
+//     attribute to be declared.
+//
+// NOTE: these strings come from weaver's rego policy output. If a weaver
+// version bump renames them, enforcement silently weakens — re-verify when
+// bumping the pinned weaver image.
+var actionableAdviceTypes = map[string]struct{}{
+	"extends_namespace": {},
+}
+
 func SemconvVersion() string {
 	// semconv.SchemaURL is "https://opentelemetry.io/schemas/1.41.0"
 	return semconv.SchemaURL[strings.LastIndex(semconv.SchemaURL, "/")+1:]
@@ -96,6 +114,7 @@ type weaverStatistics struct {
 type weaverAdvice struct {
 	Message    string `json:"message"`
 	Level      string `json:"level"`
+	AdviceType string `json:"id"`
 	SignalType string `json:"signal_type"`
 	SignalName string `json:"signal_name"`
 }
@@ -105,8 +124,9 @@ type weaverLiveCheckResult struct {
 }
 
 type adviceInfo struct {
-	Level   string
-	Signals map[string]struct{} // set of "signal_type:signal_name"
+	Level      string
+	AdviceType string
+	Signals    map[string]struct{} // set of "signal_type:signal_name"
 }
 
 // runWeaverValidation stops the weaver container (which runs as a service in
@@ -231,9 +251,7 @@ func validateWeaverReport(t *testing.T, report *weaverReport) {
 	// Build message → {level, signals} lookup from the sample data.
 	adviceByMsg := collectAdviceInfo(report.Samples)
 
-	// Log all advisory messages grouped by level, and count actionable
-	// violations (excluding signals listed in weaverIgnoredSignals).
-	var actionableViolations int
+	// Log all advisory messages grouped by level.
 	t.Logf("  advisory details:")
 	for _, level := range []string{"violation", "improvement", "information"} {
 		for msg, count := range stats.AdviceMessageCounts {
@@ -249,9 +267,6 @@ func validateWeaverReport(t *testing.T, report *weaverReport) {
 					suffix = " [ignored]"
 				}
 				t.Logf("    [%s] [%dx] %s (signals: unknown)%s", level, count, msg, suffix)
-				if !msgIgnored {
-					actionableViolations += count
-				}
 				continue
 			}
 			if info.Level != level {
@@ -264,17 +279,52 @@ func validateWeaverReport(t *testing.T, report *weaverReport) {
 				suffix = " [ignored]"
 			}
 			t.Logf("    [%s] [%dx] %s (signals: %s)%s", level, count, msg, strings.Join(signals, ", "), suffix)
-			if level == "violation" && !ignored {
-				actionableViolations += count
+		}
+	}
+
+	actionableAdvisories := countActionableAdvisories(stats, adviceByMsg)
+	t.Logf("  advisories: %d violation(s), %d actionable (after ignoring %v)",
+		violations, actionableAdvisories, sortedSignals(weaverIgnoredSignals))
+
+	assert.Zero(t, actionableAdvisories,
+		"weaver found %d actionable semantic convention advisory(ies) "+
+			"(violations or undeclared attributes under existing semconv namespaces)", actionableAdvisories)
+}
+
+func isActionableAdvice(level, adviceType string) bool {
+	if level == "violation" {
+		return true
+	}
+
+	_, actionable := actionableAdviceTypes[adviceType]
+	return actionable
+}
+
+func countActionableAdvisories(stats *weaverStatistics, adviceByMsg map[string]*adviceInfo) int {
+	var count int
+	for _, level := range []string{"violation", "improvement", "information"} {
+		for msg, occurrences := range stats.AdviceMessageCounts {
+			_, messageIgnored := weaverIgnoredAdviceMessages[msg]
+			info := adviceByMsg[msg]
+			if info == nil {
+				if level == "violation" && !messageIgnored {
+					count += occurrences
+				}
+				continue
+			}
+			if info.Level != level {
+				continue
+			}
+			if messageIgnored || allSignalsIgnored(info.Signals) {
+				continue
+			}
+			if isActionableAdvice(level, info.AdviceType) {
+				count += occurrences
 			}
 		}
 	}
 
-	t.Logf("  violations: %d total, %d actionable (after ignoring %v)",
-		violations, actionableViolations, sortedSignals(weaverIgnoredSignals))
-
-	assert.Zero(t, actionableViolations,
-		"weaver found %d actionable semantic convention violation(s)", actionableViolations)
+	return count
 }
 
 // collectAdviceInfo scans all weaver samples to build a complete map from
@@ -309,8 +359,9 @@ func extractAdviceInfo(data json.RawMessage, result map[string]*adviceInfo) {
 					info, exists := result[a.Message]
 					if !exists {
 						info = &adviceInfo{
-							Level:   a.Level,
-							Signals: make(map[string]struct{}),
+							Level:      a.Level,
+							AdviceType: a.AdviceType,
+							Signals:    make(map[string]struct{}),
 						}
 						result[a.Message] = info
 					}
